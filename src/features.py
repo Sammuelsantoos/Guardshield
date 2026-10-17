@@ -92,6 +92,53 @@ def add_geographic_features(df: pl.DataFrame) -> pl.DataFrame:
 
     return pl.from_pandas(pdf)
 
+# ... (mantenha o código anterior e adicione essa função antes do build_features)
+
+def add_mcc_and_customer_stats(df: pl.DataFrame) -> pl.DataFrame:
+    con = duckdb.connect()
+    con.register("tx", df.to_arrow())
+
+    sql = """
+    WITH base AS (
+        SELECT *,
+               ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY timestamp) AS rn
+        FROM tx
+    )
+    SELECT *,
+        COALESCE(AVG(amount) OVER (
+            PARTITION BY customer_id, merchant_category
+            ORDER BY timestamp
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ), amount) AS customer_mcc_avg,
+        COALESCE(STDDEV_SAMP(amount) OVER (
+            PARTITION BY customer_id, merchant_category
+            ORDER BY timestamp
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ), 0) AS customer_mcc_std,
+        COALESCE(AVG(amount) OVER (
+            PARTITION BY customer_id
+            ORDER BY timestamp
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ), amount) AS customer_avg_amount,
+        COALESCE(STDDEV_SAMP(amount) OVER (
+            PARTITION BY customer_id
+            ORDER BY timestamp
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ), 0) AS customer_std_amount
+    FROM base
+    """
+    try:
+        out = con.execute(sql).pl()
+    finally:
+        con.close()
+
+    out = out.with_columns([
+        ((pl.col("amount") - pl.col("customer_avg_amount"))
+         / pl.col("customer_std_amount").clip(lower_bound=1.0)).alias("amount_zscore"),
+        (pl.col("amount") / pl.col("customer_mcc_avg").clip(lower_bound=1.0)).alias("amount_vs_mcc_avg"),
+    ])
+    return out.drop("rn")
+
 
 def build_features(
     input_path: Path | None = None,
@@ -102,7 +149,8 @@ def build_features(
 
     df = pl.read_parquet(input_path)
     df = add_temporal_windows(df)
-    df = add_geographic_features(df) # <-- Nova função adicionada aqui
+    df = add_geographic_features(df)
+    df = add_mcc_and_customer_stats(df) # <-- Nova função adicionada aqui
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.write_parquet(output_path)
