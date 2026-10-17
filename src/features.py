@@ -140,8 +140,6 @@ def add_mcc_and_customer_stats(df: pl.DataFrame) -> pl.DataFrame:
     return out.drop("rn")
 
 
-# ... (adicione essa função antes do build_features)
-
 def add_device_ip_features(df: pl.DataFrame) -> pl.DataFrame:
     pdf = df.to_pandas().sort_values(["customer_id", "timestamp"]).reset_index(drop=True)
 
@@ -156,10 +154,12 @@ def add_device_ip_features(df: pl.DataFrame) -> pl.DataFrame:
     ).astype("int8")
     pdf["ip_change"] = pdf["ip_change"].fillna(0)
 
+    # CORREÇÃO AQUI: Calcula o número acumulado de dispositivos únicos
+    # ~pdf.duplicated marca True apenas na primeira vez que o device aparece para o cliente
     pdf["device_nunique_7d"] = (
-        pdf.groupby("customer_id")["device_id"]
-           .transform(lambda s: s.expanding().apply(lambda x: len(set(x))))
-    )
+        ~pdf.duplicated(subset=["customer_id", "device_id"])
+    ).groupby(pdf["customer_id"]).cumsum()
+    
     pdf = pdf.drop(columns=["ip_prefix"])
 
     return pl.from_pandas(pdf)
