@@ -140,6 +140,31 @@ def add_mcc_and_customer_stats(df: pl.DataFrame) -> pl.DataFrame:
     return out.drop("rn")
 
 
+# ... (adicione essa função antes do build_features)
+
+def add_device_ip_features(df: pl.DataFrame) -> pl.DataFrame:
+    pdf = df.to_pandas().sort_values(["customer_id", "timestamp"]).reset_index(drop=True)
+
+    pdf["device_change"] = (
+        pdf.groupby("customer_id")["device_id"].shift() != pdf["device_id"]
+    ).astype("int8")
+    pdf["device_change"] = pdf["device_change"].fillna(0)
+
+    pdf["ip_prefix"] = pdf["ip_address"].str.rsplit(".", n=1).str[0]
+    pdf["ip_change"] = (
+        pdf.groupby("customer_id")["ip_prefix"].shift() != pdf["ip_prefix"]
+    ).astype("int8")
+    pdf["ip_change"] = pdf["ip_change"].fillna(0)
+
+    pdf["device_nunique_7d"] = (
+        pdf.groupby("customer_id")["device_id"]
+           .transform(lambda s: s.expanding().apply(lambda x: len(set(x))))
+    )
+    pdf = pdf.drop(columns=["ip_prefix"])
+
+    return pl.from_pandas(pdf)
+
+
 def build_features(
     input_path: Path | None = None,
     output_path: Path | None = None,
@@ -150,12 +175,12 @@ def build_features(
     df = pl.read_parquet(input_path)
     df = add_temporal_windows(df)
     df = add_geographic_features(df)
-    df = add_mcc_and_customer_stats(df) # <-- Nova função adicionada aqui
+    df = add_mcc_and_customer_stats(df)
+    df = add_device_ip_features(df) # <-- Nova função adicionada aqui
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.write_parquet(output_path)
     return df
-
 
 if __name__ == "__main__":
     out = build_features()
